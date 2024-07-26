@@ -448,3 +448,28 @@ def get_leding_wk_id(wk_id: str, leding_num: int = 1):
         leding_wk_num = added_wk_num
 
     return leding_wk_num
+
+def list2string(inlist, delim = ' '):
+    """ This function use to convert from list variable to concatenate string
+    having 2 input parameters
+    inlist : list , that need to conver to string
+    delim  : text , is a charactor use to be delimeter between each value in list
+    """
+    
+    outtxt = ''
+    n = 0
+    
+    for itm in inlist:
+        
+        if n == 0:
+            outtxt = outtxt + str(itm)
+            n      = n + 1
+        else:
+            outtxt = outtxt + str(delim) + str(itm)
+            n      = n + 1
+        ## end if
+    ## end for
+    
+    return outtxt
+
+## end def

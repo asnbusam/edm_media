@@ -1987,19 +1987,19 @@ def kpi_noctrl_allprod(txn
     )
 
     if period_col == 'period_fis_wk' : 
-        allprod_kpi_allmech  = txn_test_combine.groupBy('period_fis_wk').alias('period_col')\
+        allprod_kpi_allmech  = txn_test_combine.groupBy(txn_test_combine.period_fis_wk.alias('period_col'))\
                                                .pivot('carded_nonCarded')\
                                                .agg(*kpis)\
                                                .withColumn('kpi_level', F.lit('all_prod_lotuss'))\
                                                .withColumn('mech_name', F.lit('NonSpecific'))\
-                                               .withColumn('store_format'), F.lit(uppper(store_fmt))
+                                               .withColumn('store_format', F.lit(store_fmt))
     else:
-        allprod_kpi_allmech  = txn_test_combine.groupBy('period_promo_wk')\
+        allprod_kpi_allmech  = txn_test_combine.groupBy(txn_test_combine.period_promo_wk.alias('period_col'))\
                                                .pivot('carded_nonCarded')\
                                                .agg(*kpis)\
                                                .withColumn('kpi_level', F.lit('all_prod_lotuss'))\
                                                .withColumn('mech_name', F.lit('NonSpecific'))\
-                                               .withColumn('store_format'), F.lit(uppper(store_fmt))     
+                                               .withColumn('store_format', F.lit(store_fmt))
     ## end if
                         
     prod_kpi_final       = allprod_kpi_allmech.fillna(0)
