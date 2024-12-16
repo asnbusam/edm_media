@@ -9561,7 +9561,7 @@ def sales_uplift_promo_reg(txn,
     print('=' * 80)
     print(' Display wk_sales_pre' )
     
-    wk_sales_pre.display()
+    #wk_sales_pre.display() ### James commented out since NPD doesn't have sales during pre period 15 Oct 2024
     
     print('=' * 80)
     #---- Matchingsales_pre_df = to_pandas(sales_pre)
@@ -9654,7 +9654,7 @@ def sales_uplift_promo_reg(txn,
     uplift_region['pct_uplift']   = uplift_region['s_uplift_reg'] / uplift_region['ctr_sales_adj_reg']
 
     print('\n' + '-'*80 + '\n Uplift by Region at Level ' + str(sales_uplift_lv) +  '\n' + '-'*80 + '\n')
-    uplift_region.display()
+    #uplift_region.display() ### James commented out since NPD doesn't have sales during pre period 15 Oct 2024
     ## ------------------------------------------------------------
     
     

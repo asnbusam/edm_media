@@ -434,8 +434,9 @@ def get_customer_uplift_per_mechanic(txn: SparkDataFrame,
     target_str = _create_test_store_sf(test_store_sf=test_store_sf, cp_start_date=cp_start_date, cp_end_date=cp_end_date)
 #     cmp_exposed = _get_exposed_cust(txn=txn, test_store_sf=target_str, adj_prod_sf=adj_prod_sf)
 
-    mechanic_list = target_str.select('mech_name').drop_duplicates().rdd.flatMap(lambda x: x).collect()
-
+    mechanic_list = [
+        mech[0] for mech in target_str.select("mech_name").drop_duplicates().collect()
+    ]
     print("List of detected mechanics from store list: ", mechanic_list)
 
     ctr_str = _create_ctrl_store_sf(ctr_store_list=ctr_store_list, cp_start_date=cp_start_date, cp_end_date=cp_end_date)
@@ -786,9 +787,8 @@ def get_cust_activated_by_mech(txn: SparkDataFrame,
                                                               .drop_duplicates()
         
         # For Promozone, only take into account transactions occuring only at Target stores, since the zones are only available at Target stores
-        if promozone_flag == True:
-            test_store_list = test_store_sf.select('store_id').drop_duplicates().rdd.flatMap(lambda x: x).collect()
-            
+        if promozone_flag == True:            
+            test_store_list = [store[0] for store in test_store_sf.select("store_id").drop_duplicates().collect()]
             all_feat_trans_trans_level = all_feat_trans_trans_level.filter(F.col('store_id').isin(test_store_list))
 
         # Get txn that are only at stores with media and at aisles where media could be found, during time media could be found
@@ -852,7 +852,9 @@ def get_cust_activated_by_mech(txn: SparkDataFrame,
     # Get target stores with filled dates and replace special characters in mechanic names 
     target_str = _create_test_store_sf(test_store_sf=test_store_sf, cp_start_date=cp_start_date, cp_end_date=cp_end_date)
 
-    mechanic_list = target_str.select('mech_name').drop_duplicates().rdd.flatMap(lambda x: x).collect()
+    mechanic_list = [
+        mech[0] for mech in target_str.select("mech_name").drop_duplicates().collect()
+    ]
     print("List of detected mechanics from store list: ", mechanic_list)
 
     num_of_mechanics = len(mechanic_list)
@@ -945,12 +947,9 @@ def get_sales_mkt_growth_per_mech(
         "fis_week" or "promo_week"
     """
     # get mechanic list
-    mechanic_list = (
-        trg_store_df.select("mech_name")
-        .drop_duplicates()
-        .rdd.flatMap(lambda x: x)
-        .collect()
-    )
+    mechanic_list = [
+        mech[0] for mech in trg_store_df.select("mech_name").drop_duplicates().collect()
+    ]
     print("List of detected mechanics from store list: ", mechanic_list)
 
     num_of_mechanics = len(mechanic_list)
