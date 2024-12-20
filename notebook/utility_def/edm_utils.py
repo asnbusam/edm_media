@@ -97,6 +97,8 @@ TBL_CUST = "tdm.v_customer_dim"
 TBL_CUST_PROFILE = "tdm.edm_customer_profile"
 TBL_MANUF = "tdm.v_mfr_dim"
 
+TBL_CENTRAL_MEDIA = "tdm_dev.v_th_central_transaction_item_media"
+
 KEY_DIVISION = [1, 2, 3, 4, 9, 10, 13]
 KEY_STORE = [1, 2, 3, 4, 5]
 
@@ -731,6 +733,301 @@ def get_trans_itm_wkly_promo(
 
 # COMMAND ----------
 
+def get_trans_itm_wkly(
+    start_week_id: int,
+    end_week_id: int,
+    customer_data: str = "EPOS",
+    manuf_name: bool = False,
+    store_format: List = [1, 2, 3, 4, 5],
+    division: List = [1, 2, 3, 4, 9, 10, 13],
+    item_col_select: List = [
+        "transaction_uid",
+        "store_id",
+        "date_id",
+        "week_id",
+        "upc_id",
+        "net_spend_amt",
+        "pkg_weight_unit",
+        "promoweek_id",
+        "tran_datetime",
+    ],
+    prod_col_select: List = [
+        "upc_id",
+        "division_name",
+        "department_name",
+        "section_name",
+        "section_id",
+        "class_name",
+        "class_id",
+    ],
+    use_central_txn: bool = True,
+    eval_type: str = "normal",
+) -> SparkDataFrame:
+    """Get transaction data with standard criteria, from weely data feed
+    If defined end_week_id, will ignore end_date_txt and pull data based on week
+    If defined end_date_txt, will pull the week_id and filter only date id needed
+
+    Parameter:
+    start_wk_id: int
+        Start fisweek id
+
+    end_week_id: int
+        End fisweek id
+
+    use_business_date: bool , default = False
+        To use business_date or date_id for period cut-off & analysis
+
+    manuf_name: bool, default = False
+        To map the manufacturer code & name
+
+    customer_data: str, default = 'EPOS'
+        For all transaction data use 'EPOS', for clubcard data only use 'CC'
+
+    item_col_select:List , default ['transaction_uid', 'store_id', 'date_id', 'upc_id', 'net_amt', 'pkg_weight_unit', 'customer_id']
+        List of additional columns from item table; *store_id , *pkg_weight_unit is derived columns
+
+    prod_col_select:List , default ['upc_id', 'division_name', 'department_name',
+                                   'section_name', 'section_id', 'class_name', 'class_id']
+        List of additional columns from prod table
+    use_central_txn: bool, default = True
+        To use central txn or not
+
+    Return
+    ------
+    SparkDataFrame
+    """
+
+    from datetime import datetime, timedelta
+    from pyspark.sql import functions as F
+    from pyspark.sql import types as T
+    from pyspark.sql import DataFrame as SparkDataFrame
+
+    from typing import List
+    from copy import deepcopy
+
+    ITEM_COL_SELECT = deepcopy(item_col_select)
+    PROD_COL_SELECT = deepcopy(prod_col_select)
+    print("-" * 80)
+    print("TRANSACTION CREATTION")
+    print("-" * 80)
+    print(f"Data start fis week : {start_week_id}")
+    print(f"Data end fis week : {end_week_id}")
+    print("-" * 80)
+    week_col = "week_id" if eval_type == "normal" else "promoweek_id"
+    if use_central_txn:
+        txn_central = spark.table(TBL_CENTRAL_MEDIA).filter(
+            F.col(week_col).between(start_week_id, end_week_id)
+        )
+        # ---- Item, Head : filter by partition
+        if customer_data == "CC":
+            txn_central = txn_central.filter(F.col("cc_flag").isin(["cc"]))
+
+        # ---- filter net_spend_amt > 0 , pkg_weight_unit > 0 , calculate units
+        txn_central = (
+            txn_central.filter(F.col("net_spend_amt") > 0)
+            .filter(F.col("product_qty") > 0)
+            .withColumn("pkg_weight_unit", F.col("units"))
+            .filter(F.col("format_id").isin(store_format))
+            .filter(~F.col("store_id").like("8%"))
+        )
+        prod: SparkDataFrame = (
+            spark.table(TBL_PROD)
+            .filter(F.col("country") == "th")
+            .filter(F.col("source") == "rms")
+            .filter(F.col("division_id").isin(division))
+            .select("upc_id", "section_id", "class_id", "subclass_id")
+            .drop_duplicates()
+        )
+        filter_division_prod_id = prod.select("upc_id").drop_duplicates()
+
+        # ---- Filter out only Clubcard data
+        if customer_data == "CC":
+            txn_central = txn_central.filter(F.col("household_id").isNotNull())
+
+        else:
+            cc = txn_central.filter(F.col("household_id").isNotNull())
+            non_cc = txn_central.filter(F.col("household_id").isNull())
+
+            txn_central = cc.unionByName(non_cc, allowMissingColumns=True)
+
+        selected_columns = list(
+            set(
+                [
+                    *ITEM_COL_SELECT,
+                    *PROD_COL_SELECT,
+                    "household_id",
+                    "store_format_group",
+                    "store_region",
+                    "channel",
+                    "transaction_id_orig"
+                ]
+            )
+        )
+        print(selected_columns)
+        sf = (
+            txn_central
+            .join(F.broadcast(filter_division_prod_id), "upc_id", "inner")
+            .join(prod, "upc_id")
+        )
+
+        sf = sf.withColumn(
+            "store_format_group",
+            F.when(F.col("store_format_name") == "Hypermarket", "HDE",)
+            .when(F.col("store_format_name") == "Supermarket", "Talad")
+            .when(F.col("store_format_name") == "Mini Supermarket", "GoFresh"),
+        )
+        sf = sf.select(selected_columns)
+        # ---- mapping channel
+        sf = _map_format_channel(sf)
+        txn_cols = sf.columns
+    else:
+        ITEM_COL_SELECT.append("customer_id") # Add customer_id to ITEM_COL_SELECT
+
+        data_period = (
+            spark.table(TBL_DATE)
+            .filter(F.col(week_col).between(start_week_id, end_week_id))
+            .select("date_id", "promoweek_id")
+            .drop_duplicates()
+        ) 
+
+        item: SparkDataFrame = (
+            spark.table(TBL_ITEM)
+            .filter(F.col(week_col).between(start_week_id, end_week_id))
+            .join(data_period, "date_id")
+        )
+
+        bask: SparkDataFrame = spark.table(TBL_BASK).filter(
+            F.col(week_col).between(start_week_id, end_week_id)
+        )
+
+        # ---- Item, Head : filter by partition
+        if customer_data == "CC":
+            item = item.filter(F.col("cc_flag").isin(["cc"]))
+            bask = bask.filter(F.col("cc_flag").isin(["cc"]))
+
+        # ---- filter net_spend_amt > 0 , product_qty > 0 , calculate units
+        item = (
+            item.filter(F.col("net_spend_amt") > 0)
+            .filter(F.col("product_qty") > 0)
+            .withColumnRenamed("counted_qty", "count_qty")
+            .withColumnRenamed("measured_qty", "measure_qty")
+            .withColumn(
+                "pkg_weight_unit",
+                F.when(F.col("count_qty").isNotNull(), F.col("product_qty")).otherwise(
+                    F.col("measure_qty")
+                ),
+            )
+        )
+
+        # ---- Basket, filter net_spend_amt > 0 , total_qty > 0 , get channel
+        # Add store_id and date_id for new joining logic - Dec 2022 - Ta
+        bask = (
+            bask.filter(F.col("net_spend_amt") > 0)
+            .filter(F.col("total_qty") > 0)
+            .select("transaction_uid", "channel", "store_id", "date_id")
+            .drop_duplicates()
+        )
+
+        # ---- Store
+        store: SparkDataFrame = (
+            spark.table(TBL_STORE)
+            .filter(F.col("country") == "th")
+            .filter(F.col("source") == "rms")
+            .filter(F.col("format_id").isin(store_format))
+            .filter(~F.col("store_id").like("8%"))
+            .withColumn(
+                "store_format_group",
+                F.when(F.col("format_id").isin([1, 2, 3]), "HDE")
+                .when(F.col("format_id") == 4, "Talad")
+                .when(F.col("format_id") == 5, "GoFresh")
+                .when(F.col("format_id") == 6, "B2B")
+                .when(F.col("format_id") == 7, "Cafe")
+                .when(F.col("format_id") == 8, "Wholesale"),
+            )
+            .withColumnRenamed("region", "store_region")
+            .select("store_id", "store_format_group", "store_region")
+            .drop_duplicates()
+        )
+
+        # ---- Product
+        prod: SparkDataFrame = (
+            spark.table(TBL_PROD)
+            .filter(F.col("country") == "th")
+            .filter(F.col("source") == "rms")
+            .filter(F.col("division_id").isin(division))
+            .withColumn("department_name", F.trim(F.col("department_name")))
+            .withColumn("section_name", F.trim(F.col("section_name")))
+            .withColumn("class_name", F.trim(F.col("class_name")))
+            .withColumn("subclass_name", F.trim(F.col("subclass_name")))
+            .withColumn("brand_name", F.trim(F.col("brand_name")))
+            .drop_duplicates()
+        )
+        filter_division_prod_id = prod.select("upc_id").drop_duplicates()
+
+        # ---- Manufacturer
+        mfr: SparkDataFrame = (
+            spark.table(TBL_MANUF)
+            .withColumn("len_mfr_name", F.length(F.col("mfr_name")))
+            .withColumn("len_mfr_id", F.length(F.regexp_extract("mfr_name", r"(-\d+)", 1)))
+            .withColumn(
+                "mfr_only_name", F.expr("substring(mfr_name, 1, len_mfr_name - len_mfr_id)")
+            )
+            .select("mfr_id", "mfr_only_name")
+            .withColumnRenamed("mfr_only_name", "manuf_name")
+            .drop_duplicates()
+        )
+        # ---- If need manufacturer name, add output columns, add manuf name in prod sparkDataFrame
+        if manuf_name:
+            with_manuf_col_list = PROD_COL_SELECT + ["mfr_id", "manuf_name"]
+            PROD_COL_SELECT = list(set(with_manuf_col_list))  # Dedup add columns
+            prod = prod.join(mfr, "mfr_id", "left")
+
+        # ---- Result spark dataframe
+        # New joining logic - Dec 2022 - Ta
+        sf = (
+            item.select(ITEM_COL_SELECT)
+            .join(F.broadcast(filter_division_prod_id), "upc_id", "inner")
+            .join(F.broadcast(store), "store_id")
+            .join(bask, on=["transaction_uid", "store_id", "date_id"], how="left")
+            .join(prod.select(PROD_COL_SELECT), "upc_id")
+        )
+        # ---- mapping channel
+        sf = _map_format_channel(sf)
+
+        # ---- Mapping household_id
+        party_mapping = (
+            spark.table(TBL_CUST)
+            .select("customer_id", "household_id")
+            .drop_duplicates()
+        )
+
+        # ---- Filter out only Clubcard data
+        if customer_data == "CC":
+            sf = sf.filter(F.col("customer_id").isNotNull()).join(
+                F.broadcast(party_mapping), "customer_id"
+            )
+
+        else:
+            cc = sf.filter(F.col("customer_id").isNotNull()).join(
+                F.broadcast(party_mapping), "customer_id"
+            )
+            non_cc = sf.filter(F.col("customer_id").isNull())
+
+            sf = cc.unionByName(non_cc, allowMissingColumns=True)
+
+        # ---- print result column
+        txn_cols = sf.columns 
+        # Dec 2022 - Add transaction_uid made of concatenated data from transaction_uid, date_id and store_id. Keep original transaction_uid as separate column
+        sf = sf.withColumn("transaction_uid_orig", F.col("transaction_uid")).withColumn(
+            "transaction_uid",
+            F.concat_ws("_", F.col("transaction_uid"), F.col("date_id"), F.col("store_id")),
+        )
+    print(f"Output columns : {txn_cols}")
+    print("-" * 30)
+    return sf
+
+# COMMAND ----------
+
 import functools
 
 
@@ -763,229 +1060,233 @@ def adjust_gofresh_region(func):
 # COMMAND ----------
 
 
-def get_trans_itm_wkly(
-    start_week_id: int,
-    end_week_id: int,
-    customer_data: str = "EPOS",
-    manuf_name: bool = False,
-    store_format: List = [1, 2, 3, 4, 5],
-    division: List = [1, 2, 3, 4, 9, 10, 13],
-    item_col_select: List = [
-        "transaction_uid",
-        "store_id",
-        "date_id",
-        "week_id",
-        "upc_id",
-        "net_spend_amt",
-        "pkg_weight_unit",
-        "customer_id",
-        "promoweek_id",
-        "tran_datetime",
-    ],
-    prod_col_select: List = [
-        "upc_id",
-        "division_name",
-        "department_name",
-        "section_name",
-        "section_id",
-        "class_name",
-        "class_id",
-    ],
-) -> SparkDataFrame:
-    """Get transaction data with standard criteria, from weely data feed
-    If defined end_week_id, will ignore end_date_txt and pull data based on week
-    If defined end_date_txt, will pull the week_id and filter only date id needed
+# def get_trans_itm_wkly(
+#     start_week_id: int,
+#     end_week_id: int,
+#     customer_data: str = "EPOS",
+#     manuf_name: bool = False,
+#     store_format: List = [1, 2, 3, 4, 5],
+#     division: List = [1, 2, 3, 4, 9, 10, 13],
+#     item_col_select: List = [
+#         "transaction_uid",
+#         "store_id",
+#         "date_id",
+#         "week_id",
+#         "upc_id",
+#         "net_spend_amt",
+#         "pkg_weight_unit",
+#         "customer_id",
+#         "promoweek_id",
+#         "tran_datetime",
+#     ],
+#     prod_col_select: List = [
+#         "upc_id",
+#         "division_name",
+#         "department_name",
+#         "section_name",
+#         "section_id",
+#         "class_name",
+#         "class_id",
+#     ],
+# ) -> SparkDataFrame:
+#     """Get transaction data with standard criteria, from weely data feed
+#     If defined end_week_id, will ignore end_date_txt and pull data based on week
+#     If defined end_date_txt, will pull the week_id and filter only date id needed
 
-    Parameter
-    ---------
-    start_wk_id: int
-        Start fisweek id
+#     Parameter
+#     ---------
+#     start_wk_id: int
+#         Start fisweek id
 
-    end_week_id: int
-        End fisweek id
+#     end_week_id: int
+#         End fisweek id
 
-    use_business_date: bool , default = False
-        To use business_date or date_id for period cut-off & analysis
+#     use_business_date: bool , default = False
+#         To use business_date or date_id for period cut-off & analysis
 
-    manuf_name: bool, default = False
-        To map the manufacturer code & name
+#     manuf_name: bool, default = False
+#         To map the manufacturer code & name
 
-    customer_data: str, default = 'EPOS'
-        For all transaction data use 'EPOS', for clubcard data only use 'CC'
+#     customer_data: str, default = 'EPOS'
+#         For all transaction data use 'EPOS', for clubcard data only use 'CC'
 
-    item_col_select:List , default ['transaction_uid', 'store_id', 'date_id', 'upc_id', 'net_amt', 'pkg_weight_unit', 'customer_id']
-        List of additional columns from item table; *store_id , *pkg_weight_unit is derived columns
+#     item_col_select:List , default ['transaction_uid', 'store_id', 'date_id', 'upc_id', 'net_amt', 'pkg_weight_unit', 'customer_id']
+#         List of additional columns from item table; *store_id , *pkg_weight_unit is derived columns
 
-    prod_col_select:List , default ['upc_id', 'division_name', 'department_name',
-                                   'section_name', 'section_id', 'class_name', 'class_id']
-        List of additional columns from prod table
+#     prod_col_select:List , default ['upc_id', 'division_name', 'department_name',
+#                                    'section_name', 'section_id', 'class_name', 'class_id']
+#         List of additional columns from prod table
 
-    Return
-    ------
-    SparkDataFrame
-    """
+#     Return
+#     ------
+#     SparkDataFrame
+#     """
 
-    from datetime import datetime, timedelta
-    from pyspark.sql import functions as F
-    from pyspark.sql import types as T
-    from pyspark.sql import DataFrame as SparkDataFrame
+#     from datetime import datetime, timedelta
+#     from pyspark.sql import functions as F
+#     from pyspark.sql import types as T
+#     from pyspark.sql import DataFrame as SparkDataFrame
 
-    from typing import List
-    from copy import deepcopy
+#     from typing import List
+#     from copy import deepcopy
 
-    ITEM_COL_SELECT = deepcopy(item_col_select)
-    PROD_COL_SELECT = deepcopy(prod_col_select)
+#     ITEM_COL_SELECT = deepcopy(item_col_select)
+#     PROD_COL_SELECT = deepcopy(prod_col_select)
 
-    data_period = (
-        spark.table(TBL_DATE)
-        .filter(F.col("week_id").between(start_week_id, end_week_id))
-        .select("date_id", "promoweek_id")
-        .drop_duplicates()
-    )
-    print("-" * 80)
-    print("TRANSACTION CREATTION")
-    print("-" * 80)
-    print(f"Data start fis week : {start_week_id}")
-    print(f"Data end fis week : {end_week_id}")
-    print("-" * 80)
+#     data_period = (
+#         spark.table(TBL_DATE)
+#         .filter(F.col("week_id").between(start_week_id, end_week_id))
+#         .select("date_id", "promoweek_id")
+#         .drop_duplicates()
+#     )
+#     print("-" * 80)
+#     print("TRANSACTION CREATTION")
+#     print("-" * 80)
+#     print(f"Data start fis week : {start_week_id}")
+#     print(f"Data end fis week : {end_week_id}")
+#     print("-" * 80)
 
-    item: SparkDataFrame = (
-        spark.table(TBL_ITEM)
-        .filter(F.col("week_id").between(start_week_id, end_week_id))
-        .join(data_period, "date_id")
-    )
+#     item: SparkDataFrame = (
+#         spark.table(TBL_ITEM)
+#         .filter(F.col("week_id").between(start_week_id, end_week_id))
+#         .join(data_period, "date_id")
+#     )
 
-    bask: SparkDataFrame = spark.table(TBL_BASK).filter(
-        F.col("week_id").between(start_week_id, end_week_id)
-    )
+#     bask: SparkDataFrame = spark.table(TBL_BASK).filter(
+#         F.col("week_id").between(start_week_id, end_week_id)
+#     )
 
-    # ---- Item, Head : filter by partition
-    if customer_data == "CC":
-        item = item.filter(F.col("cc_flag").isin(["cc"]))
-        bask = bask.filter(F.col("cc_flag").isin(["cc"]))
+#     # ---- Item, Head : filter by partition
+#     if customer_data == "CC":
+#         item = item.filter(F.col("cc_flag").isin(["cc"]))
+#         bask = bask.filter(F.col("cc_flag").isin(["cc"]))
 
-    # ---- filter net_spend_amt > 0 , product_qty > 0 , calculate units
-    item = (
-        item.filter(F.col("net_spend_amt") > 0)
-        .filter(F.col("product_qty") > 0)
-        .withColumnRenamed("counted_qty", "count_qty")
-        .withColumnRenamed("measured_qty", "measure_qty")
-        .withColumn(
-            "pkg_weight_unit",
-            F.when(F.col("count_qty").isNotNull(), F.col("product_qty")).otherwise(
-                F.col("measure_qty")
-            ),
-        )
-    )
+#     # ---- filter net_spend_amt > 0 , product_qty > 0 , calculate units
+#     item = (
+#         item.filter(F.col("net_spend_amt") > 0)
+#         .filter(F.col("product_qty") > 0)
+#         .withColumnRenamed("counted_qty", "count_qty")
+#         .withColumnRenamed("measured_qty", "measure_qty")
+#         .withColumn(
+#             "pkg_weight_unit",
+#             F.when(F.col("count_qty").isNotNull(), F.col("product_qty")).otherwise(
+#                 F.col("measure_qty")
+#             ),
+#         )
+#     )
 
-    # ---- Basket, filter net_spend_amt > 0 , total_qty > 0 , get channel
-    # Add store_id and date_id for new joining logic - Dec 2022 - Ta
-    bask = (
-        bask.filter(F.col("net_spend_amt") > 0)
-        .filter(F.col("total_qty") > 0)
-        .select("transaction_uid", "channel", "store_id", "date_id")
-        .drop_duplicates()
-    )
+#     # ---- Basket, filter net_spend_amt > 0 , total_qty > 0 , get channel
+#     # Add store_id and date_id for new joining logic - Dec 2022 - Ta
+#     bask = (
+#         bask.filter(F.col("net_spend_amt") > 0)
+#         .filter(F.col("total_qty") > 0)
+#         .select("transaction_uid", "channel", "store_id", "date_id")
+#         .drop_duplicates()
+#     )
 
-    # ---- Store
-    store: SparkDataFrame = (
-        spark.table(TBL_STORE)
-        .filter(F.col("country") == "th")
-        .filter(F.col("source") == "rms")
-        .filter(F.col("format_id").isin(store_format))
-        .filter(~F.col("store_id").like("8%"))
-        .withColumn(
-            "store_format_group",
-            F.when(F.col("format_id").isin([1, 2, 3]), "HDE")
-            .when(F.col("format_id") == 4, "Talad")
-            .when(F.col("format_id") == 5, "GoFresh")
-            .when(F.col("format_id") == 6, "B2B")
-            .when(F.col("format_id") == 7, "Cafe")
-            .when(F.col("format_id") == 8, "Wholesale"),
-        )
-        .withColumnRenamed("region", "store_region")
-        .select("store_id", "store_format_group", "store_region")
-        .drop_duplicates()
-    )
+#     # ---- Store
+#     store: SparkDataFrame = (
+#         spark.table(TBL_STORE)
+#         .filter(F.col("country") == "th")
+#         .filter(F.col("source") == "rms")
+#         .filter(F.col("format_id").isin(store_format))
+#         .filter(~F.col("store_id").like("8%"))
+#         .withColumn(
+#             "store_format_group",
+#             F.when(F.col("format_id").isin([1, 2, 3]), "HDE")
+#             .when(F.col("format_id") == 4, "Talad")
+#             .when(F.col("format_id") == 5, "GoFresh")
+#             .when(F.col("format_id") == 6, "B2B")
+#             .when(F.col("format_id") == 7, "Cafe")
+#             .when(F.col("format_id") == 8, "Wholesale"),
+#         )
+#         .withColumnRenamed("region", "store_region")
+#         .select("store_id", "store_format_group", "store_region")
+#         .drop_duplicates()
+#     )
 
-    # ---- Product
-    prod: SparkDataFrame = (
-        spark.table("tdm.v_prod_dim_c")
-        .filter(F.col("country") == "th")
-        .filter(F.col("source") == "rms")
-        .filter(F.col("division_id").isin(division))
-        .withColumn("department_name", F.trim(F.col("department_name")))
-        .withColumn("section_name", F.trim(F.col("section_name")))
-        .withColumn("class_name", F.trim(F.col("class_name")))
-        .withColumn("subclass_name", F.trim(F.col("subclass_name")))
-        .withColumn("brand_name", F.trim(F.col("brand_name")))
-        #         .select('upc_id', 'division_name', 'department_name', 'section_name',
-        #         'class_name', 'subclass_name', 'product_desc', 'product_en_desc', 'brand_name', 'mfr_id')
-        .drop_duplicates()
-    )
-    filter_division_prod_id = prod.select("upc_id").drop_duplicates()
+#     # ---- Product
+#     prod: SparkDataFrame = (
+#         spark.table("tdm.v_prod_dim_c")
+#         .filter(F.col("country") == "th")
+#         .filter(F.col("source") == "rms")
+#         .filter(F.col("division_id").isin(division))
+#         .withColumn("department_name", F.trim(F.col("department_name")))
+#         .withColumn("section_name", F.trim(F.col("section_name")))
+#         .withColumn("class_name", F.trim(F.col("class_name")))
+#         .withColumn("subclass_name", F.trim(F.col("subclass_name")))
+#         .withColumn("brand_name", F.trim(F.col("brand_name")))
+#         #         .select('upc_id', 'division_name', 'department_name', 'section_name',
+#         #         'class_name', 'subclass_name', 'product_desc', 'product_en_desc', 'brand_name', 'mfr_id')
+#         .drop_duplicates()
+#     )
+#     filter_division_prod_id = prod.select("upc_id").drop_duplicates()
 
-    # ---- Manufacturer
-    mfr: SparkDataFrame = (
-        spark.table(TBL_MANUF)
-        .withColumn("len_mfr_name", F.length(F.col("mfr_name")))
-        .withColumn("len_mfr_id", F.length(F.regexp_extract("mfr_name", r"(-\d+)", 1)))
-        .withColumn(
-            "mfr_only_name", F.expr("substring(mfr_name, 1, len_mfr_name - len_mfr_id)")
-        )
-        .select("mfr_id", "mfr_only_name")
-        .withColumnRenamed("mfr_only_name", "manuf_name")
-        .drop_duplicates()
-    )
-    # ---- If need manufacturer name, add output columns, add manuf name in prod sparkDataFrame
-    if manuf_name:
-        with_manuf_col_list = PROD_COL_SELECT + ["mfr_id", "manuf_name"]
-        PROD_COL_SELECT = list(set(with_manuf_col_list))  # Dedup add columns
-        prod = prod.join(mfr, "mfr_id", "left")
+#     # ---- Manufacturer
+#     mfr: SparkDataFrame = (
+#         spark.table(TBL_MANUF)
+#         .withColumn("len_mfr_name", F.length(F.col("mfr_name")))
+#         .withColumn("len_mfr_id", F.length(F.regexp_extract("mfr_name", r"(-\d+)", 1)))
+#         .withColumn(
+#             "mfr_only_name", F.expr("substring(mfr_name, 1, len_mfr_name - len_mfr_id)")
+#         )
+#         .select("mfr_id", "mfr_only_name")
+#         .withColumnRenamed("mfr_only_name", "manuf_name")
+#         .drop_duplicates()
+#     )
+#     # ---- If need manufacturer name, add output columns, add manuf name in prod sparkDataFrame
+#     if manuf_name:
+#         with_manuf_col_list = PROD_COL_SELECT + ["mfr_id", "manuf_name"]
+#         PROD_COL_SELECT = list(set(with_manuf_col_list))  # Dedup add columns
+#         prod = prod.join(mfr, "mfr_id", "left")
 
-    # ---- Result spark dataframe
-    # New joining logic - Dec 2022 - Ta
-    sf = (
-        item.select(ITEM_COL_SELECT)
-        .join(F.broadcast(filter_division_prod_id), "upc_id", "inner")
-        .join(F.broadcast(store), "store_id")
-        .join(bask, on=["transaction_uid", "store_id", "date_id"], how="left")
-        .join(prod.select(PROD_COL_SELECT), "upc_id")
-    )
-    # ---- mapping channel
-    sf = _map_format_channel(sf)
+#     # ---- Result spark dataframe
+#     # New joining logic - Dec 2022 - Ta
+#     sf = (
+#         item.select(ITEM_COL_SELECT)
+#         .join(F.broadcast(filter_division_prod_id), "upc_id", "inner")
+#         .join(F.broadcast(store), "store_id")
+#         .join(bask, on=["transaction_uid", "store_id", "date_id"], how="left")
+#         .join(prod.select(PROD_COL_SELECT), "upc_id")
+#     )
+#     # ---- mapping channel
+#     sf = _map_format_channel(sf)
 
-    # ---- Mapping household_id
-    party_mapping = (
-        spark.table(TBL_CUST).select("customer_id", "household_id").drop_duplicates()
-    )
+#     # ---- Mapping household_id
+#     party_mapping = (
+#         spark.table(TBL_CUST).select("customer_id", "household_id").drop_duplicates()
+#     )
 
-    # ---- Filter out only Clubcard data
-    if customer_data == "CC":
-        sf = sf.filter(F.col("customer_id").isNotNull()).join(
-            F.broadcast(party_mapping), "customer_id"
-        )
+#     # ---- Filter out only Clubcard data
+#     if customer_data == "CC":
+#         sf = sf.filter(F.col("customer_id").isNotNull()).join(
+#             F.broadcast(party_mapping), "customer_id"
+#         )
 
-    else:
-        cc = sf.filter(F.col("customer_id").isNotNull()).join(
-            F.broadcast(party_mapping), "customer_id"
-        )
-        non_cc = sf.filter(F.col("customer_id").isNull())
+#     else:
+#         cc = sf.filter(F.col("customer_id").isNotNull()).join(
+#             F.broadcast(party_mapping), "customer_id"
+#         )
+#         non_cc = sf.filter(F.col("customer_id").isNull())
 
-        sf = cc.unionByName(non_cc, allowMissingColumns=True)
+#         sf = cc.unionByName(non_cc, allowMissingColumns=True)
 
-    # ---- print result column
-    txn_cols = sf.columns
-    print(f"Output columns : {txn_cols}")
-    print("-" * 30)
+#     # ---- print result column
+#     txn_cols = sf.columns
+#     print(f"Output columns : {txn_cols}")
+#     print("-" * 30)
 
-    # Dec 2022 - Add transaction_uid made of concatenated data from transaction_uid, date_id and store_id. Keep original transaction_uid as separate column
-    sf = sf.withColumn("transaction_uid_orig", F.col("transaction_uid")).withColumn(
-        "transaction_uid",
-        F.concat_ws("_", F.col("transaction_uid"), F.col("date_id"), F.col("store_id")),
-    )
+#     # Dec 2022 - Add transaction_uid made of concatenated data from transaction_uid, date_id and store_id. Keep original transaction_uid as separate column
+#     sf = sf.withColumn("transaction_uid_orig", F.col("transaction_uid")).withColumn(
+#         "transaction_uid",
+#         F.concat_ws("_", F.col("transaction_uid"), F.col("date_id"), F.col("store_id")),
+#     )
 
-    return sf
+#     return sf
+
+
+# COMMAND ----------
+
 
 
 # COMMAND ----------
@@ -2123,6 +2424,7 @@ def promo_week_cal(in_promo_wk, n):
 # COMMAND ----------
 
 
+
 # COMMAND ----------
 
 # wk = promo_week_cal(202002, -2)
@@ -2203,5 +2505,3 @@ def get_dir_content(ls_path):
 
 
 ## end def
-
-# COMMAND ----------

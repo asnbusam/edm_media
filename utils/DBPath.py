@@ -28,6 +28,8 @@ class DBPath(_Path_):
         if self.as_posix()[:8] != "/Volumes":
             rm_first_5_str = str(self.as_posix())[5:]
             return str("dbfs:"+rm_first_5_str)
+        elif self.as_posix()[:8] == "/Volumes" :
+            return str("dbfs:" + self.as_posix())
         else:
             return str(self.as_posix())
 

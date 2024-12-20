@@ -19,7 +19,7 @@ from utils import helper
 from utils.config import Config
 
 class CampaignConfigFile:
-    def __init__(self, source_file):
+    def __init__(self, source_file, encoding="utf-8"):
         """
         Initializes a CampaignConfigFile object.
 
@@ -35,7 +35,7 @@ class CampaignConfigFile:
         else:
             self.cmp_config_file = DBPath(str(source_file))
         self.cmp_config_file_name = self.cmp_config_file.name
-        self.cmp_config_df = pd.read_csv(self.cmp_config_file.file_api(), dtype={"cross_cate_cd":pd.StringDtype()})
+        self.cmp_config_df = pd.read_csv(self.cmp_config_file.file_api(), dtype={"cross_cate_cd":pd.StringDtype()}, encoding=encoding)
         self.cmp_config_df.insert(
             loc=0, column="row_num", value=self.cmp_config_df.index + 1
         )

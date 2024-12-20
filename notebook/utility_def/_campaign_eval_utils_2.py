@@ -4266,7 +4266,9 @@ def cust_kpi_by_mech(txn
     
     txn_all_combine = txn_test_combine.unionByName(txn_ctrl_combine)    
     
-    kpis = [(F.countDistinct('date_id')/7).alias('n_weeks'),
+    kpis = [ F.when( ((F.countDistinct('date_id')/7) > 0) , (F.countDistinct('date_id')/7))
+              .otherwise(F.lit(0))
+              .alias('n_weeks'),
             F.sum('net_spend_amt').alias('sales'),
             F.sum('pkg_weight_unit').alias('units'),
             F.countDistinct('transaction_uid').alias('visits'),
@@ -4329,6 +4331,14 @@ def cust_kpi_by_mech(txn
      .withColumn('store_mech_set', F.lit('ALL_MECH'))
     )
     
+    all_lotuss_kpi = \
+    (txn_all_combine
+     .groupBy('test_ctrl_store','period_fis_wk')
+     .pivot('carded_nonCarded')
+     .agg(*kpis)
+     .withColumn('kpi_level', F.lit('feature_lotus'))
+     .withColumn('store_mech_set', F.lit('ALL_MECH'))
+    )
      ## add groupBy "store-mech_set"  -- Pat Feb 2024 =>> control store will be dup by # target store
      ##-------------------------------------------------------------------------
     sku_kpi_by_mech = \
@@ -4377,17 +4387,27 @@ def cust_kpi_by_mech(txn
      .agg(*kpis)
      .withColumn('kpi_level', F.lit('feature_class'))
     )
+
+    all_lotuss_kpi_by_mech = \
+    (txn_all_combine
+     .groupBy('test_ctrl_store','store_mech_set','period_fis_wk')
+     .pivot('carded_nonCarded')
+     .agg(*kpis)
+     .withColumn('kpi_level', F.lit('feature_lotus'))
+    )
     ##-------------------------------------------------------------------------
     
     combined_kpi = sku_kpi.unionByName(brand_in_subclass_kpi)\
                           .unionByName(all_subclass_kpi)\
                           .unionByName(brand_in_class_kpi)\
                           .unionByName(all_class_kpi)\
+                          .unionByName(all_lotuss_kpi)\
                           .unionByName(sku_kpi_by_mech)\
                           .unionByName(brand_in_subclass_kpi_by_mech)\
                           .unionByName(all_subclass_kpi_by_mech)\
                           .unionByName(brand_in_class_kpi_by_mech)\
-                          .unionByName(all_class_kpi_by_mech)
+                          .unionByName(all_class_kpi_by_mech)\
+                          .unionByName(all_lotuss_kpi_by_mech)
     
     kpi_df = to_pandas(combined_kpi)
     
@@ -4463,7 +4483,9 @@ def cust_kpi_by_mech_eq(txn
     
     txn_all_combine = txn_test_combine.unionByName(txn_ctrl_combine)    
     
-    kpis = [(F.countDistinct('date_id')/7).alias('n_weeks'),
+    kpis = [F.when( ((F.countDistinct('date_id')/7) > 0) , (F.countDistinct('date_id')/7))
+              .otherwise(F.lit(0))
+              .alias('n_weeks'),
             F.sum('net_spend_amt').alias('sales'),
             F.sum('pkg_weight_unit').alias('units'),
             F.countDistinct('transaction_uid').alias('visits'),
@@ -5095,6 +5117,15 @@ def cust_kpi_promo_wk_by_mech(txn
      .withColumn('store_mech_set', F.lit('ALL_MECH'))
     )
     
+    all_lotuss_kpi = \
+    (txn_all_combine
+     .groupBy('test_ctrl_store','period_promo_wk')
+     .pivot('carded_nonCarded')
+     .agg(*kpis)
+     .withColumn('kpi_level', F.lit('feature_lotus'))
+     .withColumn('store_mech_set', F.lit('ALL_MECH'))
+    )
+
      ## add groupBy "store-mech_set"  -- Pat Feb 2024 =>> control store will be dup by # target store
      ##-------------------------------------------------------------------------
     sku_kpi_by_mech = \
@@ -5143,17 +5174,27 @@ def cust_kpi_promo_wk_by_mech(txn
      .agg(*kpis)
      .withColumn('kpi_level', F.lit('feature_class'))
     )
+
+    all_lotuss_kpi_by_mech = \
+    (txn_all_combine
+     .groupBy('test_ctrl_store','store_mech_set','period_promo_wk')
+     .pivot('carded_nonCarded')
+     .agg(*kpis)
+     .withColumn('kpi_level', F.lit('feature_lotus'))
+    )
     ##-------------------------------------------------------------------------
     
     combined_kpi = sku_kpi.unionByName(brand_in_subclass_kpi, allowMissingColumns=True )\
                           .unionByName(all_subclass_kpi, allowMissingColumns=True)\
                           .unionByName(brand_in_class_kpi, allowMissingColumns=True)\
                           .unionByName(all_class_kpi, allowMissingColumns=True)\
+                          .unionByName(all_lotuss_kpi, allowMissingColumns=True)\
                           .unionByName(sku_kpi_by_mech , allowMissingColumns=True)\
                           .unionByName(brand_in_subclass_kpi_by_mech , allowMissingColumns=True)\
                           .unionByName(all_subclass_kpi_by_mech , allowMissingColumns=True)\
                           .unionByName(brand_in_class_kpi_by_mech , allowMissingColumns=True)\
-                          .unionByName(all_class_kpi_by_mech , allowMissingColumns=True)
+                          .unionByName(all_class_kpi_by_mech , allowMissingColumns=True)\
+                          .unionByName(all_lotuss_kpi_by_mech , allowMissingColumns=True)
     
     kpi_df = to_pandas(combined_kpi)
     
@@ -9520,7 +9561,7 @@ def sales_uplift_promo_reg(txn,
     print('=' * 80)
     print(' Display wk_sales_pre' )
     
-    wk_sales_pre.display()
+    #wk_sales_pre.display() ### James commented out since NPD doesn't have sales during pre period 15 Oct 2024
     
     print('=' * 80)
     #---- Matchingsales_pre_df = to_pandas(sales_pre)
@@ -9613,7 +9654,7 @@ def sales_uplift_promo_reg(txn,
     uplift_region['pct_uplift']   = uplift_region['s_uplift_reg'] / uplift_region['ctr_sales_adj_reg']
 
     print('\n' + '-'*80 + '\n Uplift by Region at Level ' + str(sales_uplift_lv) +  '\n' + '-'*80 + '\n')
-    uplift_region.display()
+    #uplift_region.display() ### James commented out since NPD doesn't have sales during pre period 15 Oct 2024
     ## ------------------------------------------------------------
     
     

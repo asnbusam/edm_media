@@ -83,28 +83,27 @@ class txnItem:
         self._TBL_MANUF = "tdm.v_mfr_dim"
         self._TBL_STORE = "tdm.v_store_dim"
         self._TBL_SM_LKP = "tdm.srai_shopping_missions_lookup"
-        self._TBL_SEGMENT = "tdm_dev.v_th_central_customer_segment"
 
-        # self._LKP_FACTS_DESC = self.spark.createDataFrame(
-        #     [(-1,'Not available'), (1, 'Primary'), (2, 'Secondary'), (3, 'Tertiary')],
-        #     ('facts_seg', 'description'))
-        # self._LKP_FACTS_LV2_DESC = self.spark.createDataFrame(
-        #     [(-1, 'Not available'), (1, 'Primary High'), (2, 'Primary Standard'),
-        #      (3, 'Secondary Grow Frequency'), (4, 'Secondary Grow Breadth'),
-        #      (5, 'Tertiary Standard'), (6, 'Tertiary (OTB)')],
-        #     ('facts_level2_seg', 'description'))
-        # self._LKP_TRUPRICE_DESC = self.spark.createDataFrame(
-        #     [(1, 'Most Price Driven'), (2, 'Price Driven'), (3, 'Price Neutral'),
-        #      (4, 'Price Insensitive'), (5, 'Most Price Insensitive')],
-        #     ('truprice_seg', 'description'))
+        self._LKP_FACTS_DESC = self.spark.createDataFrame(
+            [(-1,'Not available'), (1, 'Primary'), (2, 'Secondary'), (3, 'Tertiary')],
+            ('facts_seg', 'description'))
+        self._LKP_FACTS_LV2_DESC = self.spark.createDataFrame(
+            [(-1, 'Not available'), (1, 'Primary High'), (2, 'Primary Standard'),
+             (3, 'Secondary Grow Frequency'), (4, 'Secondary Grow Breadth'),
+             (5, 'Tertiary Standard'), (6, 'Tertiary (OTB)')],
+            ('facts_level2_seg', 'description'))
+        self._LKP_TRUPRICE_DESC = self.spark.createDataFrame(
+            [(1, 'Most Price Driven'), (2, 'Price Driven'), (3, 'Price Neutral'),
+             (4, 'Price Insensitive'), (5, 'Most Price Insensitive')],
+            ('truprice_seg', 'description'))
 
-        # self._LKP_LIFE_CYC_DESC = self.spark.read.csv('dbfs:/mnt/pvtdmbobazc01/edminput/filestore/user/thanawat_asa/lifecycle_segmentation_prod/lifecycle_name_def.csv',
-        #                                                   header=True, inferSchema=True)
+        self._LKP_LIFE_CYC_DESC = self.spark.read.csv('dbfs:/mnt/pvtdmbobazc01/edminput/filestore/user/thanawat_asa/lifecycle_segmentation_prod/lifecycle_name_def.csv',
+                                                          header=True, inferSchema=True)
         
         self._MPPNG_LYT_DESC = {"1":'premium', "2":'valuable', "3":'potential', "4":'uncommitted'}
 
-        # self._LKP_LIFE_CYC_LV2_DESC = self.spark.read.csv('dbfs:/mnt/pvtdmbobazc01/edminput/filestore/user/thanawat_asa/lifecycle_segmentation_prod/lifecycle_detailed_name_def.csv',
-        #                                                   header=True, inferSchema=True)
+        self._LKP_LIFE_CYC_LV2_DESC = self.spark.read.csv('dbfs:/mnt/pvtdmbobazc01/edminput/filestore/user/thanawat_asa/lifecycle_segmentation_prod/lifecycle_detailed_name_def.csv',
+                                                          header=True, inferSchema=True)
 
         self.wk_id_type = "fis_week_id"
         self.period_n_week = range_n_week
@@ -384,25 +383,24 @@ class txnItem:
 
             return bck_date_id, bck_wk_id, bck_p_id, bck_qrt_id
 
-        # self.spark.sparkContext.setCheckpointDir('dbfs:/mnt/pvtdmbobazc01/edminput/filestore/thanakrit/temp/checkpoint')
+        self.spark.sparkContext.setCheckpointDir('dbfs:/mnt/pvtdmbobazc01/edminput/filestore/thanakrit/temp/checkpoint')
 
         # use back date 6 mth to decreaese max seg data scan
         _, bck_wk_id, bck_p_id, bck_qrt_id = get_back_date_dim(self.run_date)
 
-        truprice = self.spark.table(self._TBL_SEGMENT).where(F.col("week_id")>=bck_wk_id).select("household_id", "truprice_seg_desc", "week_id").drop_duplicates()
-        facts = self.spark.table("tdm.srai_facts_full_history").where(F.col("week_id")>=bck_wk_id).select("household_id", "facts_seg_desc", "week_id").drop_duplicates()
+        truprice = self.spark.table("tdm_seg.srai_truprice_full_history").where(F.col("period_id")>=bck_p_id).select("household_id", "truprice_seg_desc", "period_id").drop_duplicates()
+        facts = self.spark.table("tdm_seg.srai_facts_full_history").where(F.col("week_id")>=bck_wk_id).select("household_id", "facts_seg_desc", "week_id").drop_duplicates()
         prfr_store = \
-            (self.spark.table(self._TBL_SEGMENT)
-             .where(F.col("week_id")>=bck_wk_id)
-             .select("household_id", F.col("preferred_store_id").alias("pref_store_id"), F.col("preferred_store_format").alias("pref_store_format"), F.col("preferred_store_region").alias("pref_store_region"), "week_id")
+            (self.spark.table("tdm_seg.srai_prefstore_full_history")
+             .where(F.col("period_id")>=bck_p_id)
+             .select("household_id", "pref_store_id", "pref_store_format", "pref_store_region", "period_id")
              ).drop_duplicates()
-        # change lifestage quarter -> period
-        lfstg = self.spark.table(self._TBL_SEGMENT).where(F.col("week_id")>=bck_wk_id).select("household_id", "lifestage_seg_name", "week_id").drop_duplicates()
+        lfstg = self.spark.table('tdm.edm_lifestage2023_full_v3').where(F.col("mapping_quarter_id")>=bck_qrt_id).select("household_id", "lifestage_seg_name", "mapping_quarter_id").drop_duplicates()
         
         lfcycl = \
-            (self.spark.table(self._TBL_SEGMENT)
+            (self.spark.table("tdm_seg.lifecycle_with_rfm_rev2")
              .where(F.col("week_id")>=bck_wk_id)
-            #  .join(self._LKP_LIFE_CYC_LV2_DESC, "lifecycle_detailed_code")
+             .join(self._LKP_LIFE_CYC_LV2_DESC, "lifecycle_detailed_code")
              .withColumn("add_1_week_id", F.col("week_id").astype(T.IntegerType()) + 1)
              .withColumn("add_1_mod52", F.col("add_1_week_id") % 52)
              .withColumn("mapping_week_num", F.when(F.col("add_1_mod52")>52, F.col("add_1_week_id") + 100 - (52-1) ).otherwise(F.col("add_1_week_id")))
@@ -440,17 +438,17 @@ class txnItem:
         #      .join(lfcycl_desc, "lifecycle_detailed_code").select("household_id", "lifecycle_name", get_leding_wk_id_udf(F.col("week_id")).alias("mapping_week_id"))
         #      )
 
-        max_trprc_wk_id = truprice.agg(F.max("week_id")).drop_duplicates().collect()[0][0]
+        max_trprc_p_id = truprice.agg(F.max("period_id")).drop_duplicates().collect()[0][0]
         max_facts_wk_id = facts.agg(F.max("week_id")).drop_duplicates().collect()[0][0]
-        max_prfr_str_wk_id = prfr_store.agg(F.max("week_id")).drop_duplicates().collect()[0][0]
-        max_lfstg_wk_id = lfstg.agg(F.max("week_id")).drop_duplicates().collect()[0][0] # change from quarter to period
+        max_prfr_str_p_id = prfr_store.agg(F.max("period_id")).drop_duplicates().collect()[0][0]
+        max_lfstg_mp_qrt_id = lfstg.agg(F.max("mapping_quarter_id")).drop_duplicates().collect()[0][0]
         max_lfcycl_mp_wk_id = lfcycl.agg(F.max("mapping_week_id")).drop_duplicates().collect()[0][0]
         max_lylty_mp_wk_id = lylty.agg(F.max("mapping_week_id")).drop_duplicates().collect()[0][0]
 
-        self.map_trprc_wk_id = max_trprc_wk_id if int(self.end_wk_id) > int(max_trprc_wk_id) else self.end_wk_id
+        self.map_trprc_p_id = max_trprc_p_id if int(self.end_period_id) > int(max_trprc_p_id) else self.end_period_id
         self.map_facts_wk_id = max_facts_wk_id if int(self.end_wk_id) > int(max_facts_wk_id) else self.end_wk_id
-        self.map_prfr_str_wk_id = max_prfr_str_wk_id if int(self.end_wk_id) > int(max_prfr_str_wk_id) else self.end_wk_id
-        self.max_lfstg_wk_id = max_lfstg_wk_id if int(self.end_wk_id) > int(max_lfstg_wk_id) else self.end_wk_id
+        self.map_prfr_str_p_id = max_prfr_str_p_id if int(self.end_period_id) > int(max_prfr_str_p_id) else self.end_period_id
+        self.map_lfstg_mp_qrt_id = max_lfstg_mp_qrt_id if int(self.end_qtr_id) > int(max_lfstg_mp_qrt_id) else self.end_qtr_id
         self.map_lfcycl_mp_wk_id = max_lfcycl_mp_wk_id if int(self.end_wk_id) > int(max_lfcycl_mp_wk_id) else self.end_wk_id
         self.map_lylty_mp_wk_id = max_lylty_mp_wk_id if int(self.end_wk_id) > int(max_lylty_mp_wk_id) else self.end_wk_id
 
@@ -461,9 +459,9 @@ class txnItem:
         print(f"Facts week id : {self.map_facts_wk_id}")
         print(f"Life cycle mapping week id : {self.map_lfcycl_mp_wk_id}")
         print(f"Loyalty mapping week id : {self.map_lylty_mp_wk_id}")
-        print(f"Truprice week id : {self.map_trprc_wk_id}")
-        print(f"Preferred store week id : {self.map_prfr_str_wk_id}")
-        print(f"Life stage mapping week id : {self.max_lfstg_wk_id}")
+        print(f"Truprice period id : {self.map_trprc_p_id}")
+        print(f"Preferred store period id : {self.map_prfr_str_p_id}")
+        print(f"Life stage mapping quarter id : {self.map_lfstg_mp_qrt_id}")
         print("-"*30)
 
         cc = self.txn.where(F.col("customer_id").isNotNull())
@@ -471,10 +469,10 @@ class txnItem:
 
         cc_seg = \
             (cc
-            .join(truprice.where(F.col("week_id")==self.map_trprc_wk_id).select("household_id", "truprice_seg_desc"), "household_id", "left")
+            .join(truprice.where(F.col("period_id")==self.map_trprc_p_id).select("household_id", "truprice_seg_desc"), "household_id", "left")
             .join(facts.where(F.col("week_id")==self.map_facts_wk_id).select("household_id", "facts_seg_desc"), "household_id", "left")
-            .join(prfr_store.where(F.col("week_id")==self.map_prfr_str_wk_id).select("household_id", "pref_store_id", "pref_store_format", "pref_store_region"), "household_id", "left")
-            .join(lfstg.where(F.col("week_id")==self.max_lfstg_wk_id).select("household_id", "lifestage_seg_name"),  "household_id", "left")
+            .join(prfr_store.where(F.col("period_id")==self.map_prfr_str_p_id).select("household_id", "pref_store_id", "pref_store_format", "pref_store_region"), "household_id", "left")
+            .join(lfstg.where(F.col("mapping_quarter_id")==self.map_lfstg_mp_qrt_id).select("household_id", "lifestage_seg_name"),  "household_id", "left")
             .join(lfcycl.where(F.col("mapping_week_id")==self.map_lfcycl_mp_wk_id).select("household_id", "lifecycle_name"), "household_id", "left")
             .join(lylty.where(F.col("mapping_week_id")==self.map_lylty_mp_wk_id), "household_id", "left").drop("mapping_week_id")
             .fillna(value="Unclassified", subset=["truprice_seg_desc", "facts_seg_desc",
@@ -498,7 +496,7 @@ class txnItem:
 
         shp_ms = \
         (self.spark
-        .table("tdm_dev.shopping_missions_full_internal")
+        .table("tdm_seg.shopping_missions_full_internal")
         .where(F.col("country")=="th")
         .where(F.col("week_id").between(self.str_wk_id, self.end_wk_id))
         # Fix mapping key - transaction_uid_orig
@@ -516,47 +514,47 @@ class txnItem:
 
         self.txn = txn_shms
 
-    def map_sngl_tndr(self) -> None:
-        """Mapping single tender type, for multiple tender type stamp "multi"
-        """
-        BUFFER_END_DATE = 7
-        print("-"*30)
-        print("Mapping Basket Tender Type (single)")
-        print("-"*30)
-        print("Mulitiple tender type basket; stamp  as 'MULTI'")
-        print(f"Use tender table with dp_data_dt +{BUFFER_END_DATE} days")
-        print("-"*30)
+    # def map_sngl_tndr(self) -> None:
+    #     """Mapping single tender type, for multiple tender type stamp "multi"
+    #     """
+    #     BUFFER_END_DATE = 7
+    #     print("-"*30)
+    #     print("Mapping Basket Tender Type (single)")
+    #     print("-"*30)
+    #     print("Mulitiple tender type basket; stamp  as 'MULTI'")
+    #     print(f"Use tender table with dp_data_dt +{BUFFER_END_DATE} days")
+    #     print("-"*30)
 
-        end_date_tndr = self.end_date_id + timedelta(days=BUFFER_END_DATE)
+    #     end_date_tndr = self.end_date_id + timedelta(days=BUFFER_END_DATE)
 
-        tndr = \
-        (self.spark.table('tdm.v_resa_group_resa_tran_tender')
-         .where(F.col("country")=="th")
-         .where(F.col("source")=="resa")
-         .where(F.col("dp_data_dt").between(self.str_date_id, end_date_tndr))
-        )
+    #     tndr = \
+    #     (self.spark.table('tdm.v_resa_group_resa_tran_tender')
+    #      .where(F.col("country")=="th")
+    #      .where(F.col("source")=="resa")
+    #      .where(F.col("dp_data_dt").between(self.str_date_id, end_date_tndr))
+    #     )
 
-        sngl_tndr_typ = \
-        (tndr
-         .withColumn("tender_type_group", F.trim(F.col("tender_type_group")))
-         .withColumn("set_tndr_type", F.array_distinct(F.collect_list(F.col("tender_type_group")).over(Window.partitionBy(["tran_seq_no", "store", "day"]))))
-         # .withColumn("set_tndr_type", F.collect_set(F.col("tender_type_group")).over(Window.partitionBy("tran_seq_no")))
-         .withColumn("n_tndr_type", F.size(F.col("set_tndr_type")))
-         .select("tran_seq_no", "store", "day", "dp_data_dt", "n_tndr_type", "tender_type_group")
-         .withColumn("sngl_tndr_type", F.when(F.col("n_tndr_type")==1, F.col("tender_type_group")).otherwise(F.lit("MULTI")))
-         # Adjust to support new unique txn_uid from surrogate key
-         .withColumnRenamed("tran_seq_no", "transaction_uid_orig")
-         .withColumnRenamed("store", "store_id")
-         .withColumnRenamed("dp_data_dt", "date_id")
-         .select("transaction_uid_orig", "store_id", "day", "date_id", "sngl_tndr_type")
-         .drop_duplicates()
-        )
+    #     sngl_tndr_typ = \
+    #     (tndr
+    #      .withColumn("tender_type_group", F.trim(F.col("tender_type_group")))
+    #      .withColumn("set_tndr_type", F.array_distinct(F.collect_list(F.col("tender_type_group")).over(Window.partitionBy(["tran_seq_no", "store", "day"]))))
+    #      # .withColumn("set_tndr_type", F.collect_set(F.col("tender_type_group")).over(Window.partitionBy("tran_seq_no")))
+    #      .withColumn("n_tndr_type", F.size(F.col("set_tndr_type")))
+    #      .select("tran_seq_no", "store", "day", "dp_data_dt", "n_tndr_type", "tender_type_group")
+    #      .withColumn("sngl_tndr_type", F.when(F.col("n_tndr_type")==1, F.col("tender_type_group")).otherwise(F.lit("MULTI")))
+    #      # Adjust to support new unique txn_uid from surrogate key
+    #      .withColumnRenamed("tran_seq_no", "transaction_uid_orig")
+    #      .withColumnRenamed("store", "store_id")
+    #      .withColumnRenamed("dp_data_dt", "date_id")
+    #      .select("transaction_uid_orig", "store_id", "day", "date_id", "sngl_tndr_type")
+    #      .drop_duplicates()
+    #     )
 
-        # to-do : optimized with ragne join
-        # txn_tndr = self.txn.join(sngl_tndr_typ, ["transaction_uid", "date_id"], "left")
-        txn_tndr = (self.txn
-                    .withColumn("day", F.date_format(F.col("date_id"),'dd'))
-                    .join(sngl_tndr_typ.drop("date_id"), ["transaction_uid_orig", "store_id", "day"], "left")
-                    .drop("day")
-        )
-        self.txn = txn_tndr
+    #     # to-do : optimized with ragne join
+    #     # txn_tndr = self.txn.join(sngl_tndr_typ, ["transaction_uid", "date_id"], "left")
+    #     txn_tndr = (self.txn
+        #             .withColumn("day", F.date_format(F.col("date_id"),'dd'))
+        #             .join(sngl_tndr_typ.drop("date_id"), ["transaction_uid_orig", "store_id", "day"], "left")
+        #             .drop("day")
+        # )
+        # self.txn = txn_tndr

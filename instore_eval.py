@@ -3628,17 +3628,21 @@ def get_cust_cltv(txn: SparkDataFrame,
     brand_csr_df = _to_pandas(brand_csr)
 
     #---- Load Purchase cycle, based on lv_svv_pcyc (Switching Level)
-   # where_cond   = """ store_format_group == {} """.format(store_format)
-
+    # where_cond   = """ store_format_group == {} """.format(store_format)
+    hashed_store_format = {
+        "hde": "hypermarket",
+        "talad": "supermarket",
+        "gofresh": "mini supermarket"
+    }
     if lv_svv_pcyc.lower() == 'class':
         pc_df    = spark.table(pcyc_table)\
-                        .where(F.lower(F.col('store_format_group')) == store_format.lower())\
+                        .where((F.lower(F.col('store_format_group')) == hashed_store_format(store_format.lower())) | (F.lower(F.col('store_format_group')) == store_format.lower()) )\
                         .join(sec_id_class_id_feature_product, ['section_id', 'class_id'])
 
     elif lv_svv_pcyc.lower() == 'subclass':
 
         pc_df    = spark.table(pcyc_table)\
-                        .where(F.lower(F.col('store_format_group')) == store_format.lower())\
+                        .where((F.lower(F.col('store_format_group')) == hashed_store_format(store_format.lower())) | (F.lower(F.col('store_format_group')) == store_format.lower()))\
                         .join(sec_id_class_id_subclass_id_feature_product, ['section_id', 'class_id', 'subclass_id'])
 
 
