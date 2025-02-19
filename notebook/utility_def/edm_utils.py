@@ -2335,7 +2335,7 @@ def wk_of_year_promo_ls(in_dt):
 
         ## multiply 100 to shift bit + number of week
 
-        fiswk = ((in_year - 1) * 100) + wk
+        promo_wk = ((in_year - 1) * 100) + wk
 
     elif in_date < nxyr_1promo:
 
